@@ -6,10 +6,10 @@ class CommsClient:
         self.coordinator_ws = None
         self.unity_ws = None
 
-    def set_coordinator_socket(self, ws):
+    def set_coordinator_ws(self, ws):
         self.coordinator_ws = ws
 
-    def set_unity_socket(self, ws):
+    def set_unity_ws(self, ws):
         self.unity_ws = ws
 
     async def send_to_coordinator(self, msg_type, agent_id, payload):

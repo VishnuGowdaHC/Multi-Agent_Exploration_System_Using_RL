@@ -2,10 +2,10 @@ import numpy as np
 import math
 
 class LocalRiskMap:
-    def __init__(self, physical_width=100, physical_height=100, resolution=0.5):
+    def __init__(self, grid_size, resolution=0.5):
         self.resolution = resolution
-        self.grid_width = int(physical_width / resolution)
-        self.grid_height = int(physical_height / resolution)
+        self.grid_width = int(grid_size / resolution)
+        self.grid_height = int(grid_size / resolution)
 
         self.grid = np.zeros((self.grid_width, self.grid_height), dtype=np.int8)
         self.explored = np.zeros((self.grid_width, self.grid_height), dtype=bool)

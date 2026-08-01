@@ -2,7 +2,7 @@ import asyncio
 import json
 import websockets
 from agent_task import AgentTask
-from mesh_manager import MeshManager
+#from mesh_manager import MeshManager
 from comms_client import CommsClient
 
 class AgentHandlerService:
@@ -14,7 +14,7 @@ class AgentHandlerService:
 
         self.agent_tasks = {}
         self.comms_client = CommsClient()
-        self.mesh_manager = MeshManager()
+        #self.mesh_manager = MeshManager()
 
     async def start(self):
         print(f"Starting Agent Handler Service for {self.num_agents} agents...")
@@ -47,7 +47,7 @@ class AgentHandlerService:
 
         except (websockets.exceptions.ConnectionClosed, ConnectionRefusedError):
             print(f"Error connecting to Coordinator WebSocket")
-            self.mesh_manager.evaluate_connection_loss()
+            #self.mesh_manager.evaluate_connection_loss()
 
     async def _handle_unity_connection(self, ws):
         self.comms_client.set_unity_ws(ws)
@@ -69,7 +69,8 @@ class AgentHandlerService:
             payload = data.get("payload", {})
 
             if msg_type == "heartbeat_ack":
-                self.mesh_manager.recieve_heartbeat_ack()
+                ...
+                #self.mesh_manager.recieve_heartbeat_ack()
 
             if msg_type == "zone_assignment":
                 if agent_id in self.agent_tasks:

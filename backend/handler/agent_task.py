@@ -1,7 +1,7 @@
 import asyncio
 import numpy as np
 
-from pathfinding import astar, astar_with_hazard, find_frontier, find_safe_frontier
+from pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
 from local_risk_map import LocalRiskMap
 from rl_policy import DQNAgent
 from perception_classifier import PerceptionClassifier
@@ -10,7 +10,7 @@ from risk_scorer import RiskScorer
 class AgentTask:
     def __init__(self, agent_id, handler_service):
         self.agent_id = agent_id
-        self.handler_service = handler_service
+        self.handler = handler_service
 
         self.inbox = asyncio.Queue()
 
@@ -72,18 +72,18 @@ class AgentTask:
 
         await self._replan_standard()
 
-    async def _handle_sensor_detection(self, tag, distance, hazard_pas):
+    async def _handle_sensor_detection(self, tag, distance, hazard_pos):
         feature_vector = self.perception.classify(tag)
 
-        risk_scalar = self.risk_scorer.calculate(feature_vector, distance)
+        risk_scalar = self.risk_scorer.calculate_immediate_risk(feature_vector, distance)
 
         if risk_scalar > 0.02:
-            await self._execute_rl_decision(risk_scalar, feature_vector, hazard_pas)
+            await self._execute_rl_decision(risk_scalar, feature_vector, hazard_pos)
 
     async def _execute_rl_decision(self, risk_scalar, feature_vector, hazard_pos):
         state_vector = np.array([
-            self.current_pos[0] / self.local_map.grid_size,
-            self.current_pos[1] / self.local_map.grid_size,
+            self.current_pos[0] / self.local_map.grid_width,
+            self.current_pos[1] / self.local_map.grid_height,
             np.tanh(risk_scalar),
             self.local_map.get_coverage_pct(),
             1.0, #alive
@@ -98,12 +98,13 @@ class AgentTask:
         elif action_idx == 1: #REROUTE
             self.hold_streak = 0
             hazard_cost_map = self.local_map.build_hazard_cost_map(hazard_pos, feature_vector)
+            active_threats = [{'pos': (hazard_pos[0], hazard_pos[1]), 'features': feature_vector}]
             target = find_safe_frontier(
                 self.local_map.explored, 
                 self.local_map.zone_mask,
                 self.local_map.grid, 
                 self.current_pos, 
-                self.risk_scorer.calculate
+                lambda cx, cz: self.risk_scorer.calculate_cell_risk(cx, cz, active_threats)
             )
             if target:
                 new_path = astar_with_hazard(self.local_map.grid, hazard_cost_map, self.current_pos, target)
@@ -116,9 +117,13 @@ class AgentTask:
                 self.hold_streak = 0
 
                 hazard_cost_map = self.local_map.build_hazard_cost_map(hazard_pos, feature_vector)
+                active_threats = [{'pos': (hazard_pos[0], hazard_pos[1]), 'features': feature_vector}]
                 target = find_safe_frontier(
-                self.local_map.explored, self.local_map.zone_mask, 
-                self.local_map.grid, self.current_pos, self.risk_scorer.calculate
+                self.local_map.explored, 
+                self.local_map.zone_mask, 
+                self.local_map.grid, 
+                self.current_pos, 
+                lambda cx, cz: self.risk_scorer.calculate_cell_risk(cx, cz, active_threats)
                 )  
 
                 if target:
@@ -165,7 +170,7 @@ class AgentTask:
                 await self._send_to_unity("waypoint_list", self.path)
 
     async def _send_to_unity(self, msg_type, payload):
-        await self.handler.comms_clent.send_to_unity(
+        await self.handler.comms_client.send_to_unity(
             msg_type=msg_type,
             agent_id=self.agent_id, 
             payload=payload
