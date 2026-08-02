@@ -1,13 +1,13 @@
 import uvicorn
 
-from agent_registry import AgentRegistry
-from occupancy_grid import GlobalOccupancyGrid
-from voronoi_partition import VoronoiPartitioner
-from risk_map import GlobalRiskMap
-from reassignment import ReassignmentHandler
-from heartbeat_monitor import HeartbeatMonitor
-from metrics_analyzer import MetricsAnalyzer
-from ws_server import CoordinatorWSServer
+from .agent_registry import AgentRegistry
+from .occupancy_grid import GlobalOccupancyGrid
+from .voronoi_partition import VoronoiPartitioner
+from .risk_map import GlobalRiskMap
+from .reassignment import ReassignmentHandler
+from .heartbeat_monitor import HeartbeatMonitor
+from .metrics_analyzer import MetricsAnalyzer
+from .ws_server import CoordinatorWSServer
 
 def create_app():
     print("Booting coordinator...")

@@ -1,13 +1,15 @@
 import yaml
 import numpy as np
 from pathlib import Path
+import torch
+import os
 
-from handler.rl_policy import DQNAgent
-from handler.replay_buffer import ReplayBuffer
-from handler.training_sandbox import TrainingSandboxEnv
+from .rl_policy import DQNAgent
+from .replay_buffer import ReplayBuffer
+from .training_sandbox import TrainingSandboxEnv
 
 class TrainingFramework:
-    def __init__(self, config_path="../config/rewards.yaml", num_agents=4):
+    def __init__(self, config_path="../config/rewards.yml", num_agents=4):
         self.config_path = Path(__file__).parent / config_path
         self.num_agents = num_agents
         self.rewards, self.hyperparams = self._load_config()
@@ -46,6 +48,7 @@ class TrainingFramework:
         
         accumulated_reward = {i: 0.0 for i in range(n)} 
         losses = []
+        deaths = 0
 
         for t in range(400):
             obs, step_rewards, dones, info = self.env.tick(pending_actions)
@@ -54,7 +57,12 @@ class TrainingFramework:
             for i in range(n):
                 accumulated_reward[i] += step_rewards[i] 
                 done_flag = dones[i] or dones["__all__"]
-                
+
+                if step_rewards[i] <= -40:
+                    deaths += 1
+
+                done_flag = dones[i] or dones["__all__"]
+
                 if train and last_action[i] is not None and done_flag:
                     self.replay_buffer.push(last_state[i], last_action[i], accumulated_reward[i], obs[i], float(done_flag))
                     last_action[i] = None
@@ -81,22 +89,37 @@ class TrainingFramework:
         # Calculate average local coverage for reporting
         coverages = [self.env._get_local_coverage(a) for a in self.env.agents]
         avg_coverage = sum(coverages) / len(coverages)
+        survival_rate = max(0.0, (n - deaths) / n)
 
         return {
             "avg_coverage": avg_coverage,
             "avg_loss": float(np.mean(losses)) if losses else None,
+            "survival_rate": survival_rate
         }
 
     def train(self, num_episodes=3000):
+        consecutive_successes = 0
         for ep in range(num_episodes):
             epsilon = max(0.05, 1.0 - (ep / (num_episodes * 0.33)))
             result = self.run_episode(epsilon=epsilon, train=True)
             
-            if ep % self.hyperparams.get("target_update_every", 5) == 0:
+            if ep % 5 == 0:
                 self.agent.update_target()
 
             if ep % 50 == 0:
-                print(f"[Ep {ep:4d}] Eps: {epsilon:.2f} | Avg Local Coverage: {result['avg_coverage']:.2%} | Loss: {result['avg_loss'] or 0:.4f}")
+                print(f"[Ep {ep:4d}] Eps: {epsilon:.2f} | Avg Local Coverage: {result['avg_coverage']:.2%} | Avg survival rate: {result['survival_rate']:.2%} | Avg Loss: {result['avg_loss'] or 0:.4f}")
+
+            if result["avg_coverage"] > 0.75 and result["survival_rate"] > 0.90:
+                consecutive_successes += 1
+
+                if consecutive_successes >= 100:    
+                    print(f"Target coverage and survival reached on episode {ep}. Saving model...")
+                    
+                    # 1. Ensure the checkpoints directory exists
+                    os.makedirs("checkpoints", exist_ok=True)
+
+                    self.agent.save(self.checkpoint_dir / f"framework_v1_{ep}.pt")
+                    break
 
         self.agent.save(self.final_path)
 

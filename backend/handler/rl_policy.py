@@ -54,7 +54,7 @@ class DQNAgent:
         with torch.no_grad(): #double dqn bellman target
             next_actions = self.online_net(next_states).argmax(dim=1)
             next_q = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
-            target = rewards + self.gamma * next_q * (1.0 - dones)
+            target = (rewards * 0.1) + self.gamma * next_q * (1.0 - dones)
 
         loss = nn.functional.smooth_l1_loss(q_values, target)
         self.optimizer.zero_grad()

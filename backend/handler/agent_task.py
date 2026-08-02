@@ -1,11 +1,11 @@
 import asyncio
 import numpy as np
 
-from pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
-from local_risk_map import LocalRiskMap
-from rl_policy import DQNAgent
-from perception_classifier import PerceptionClassifier
-from risk_scorer import RiskScorer
+from .pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
+from .local_risk_map import LocalRiskMap
+from .rl_policy import DQNAgent
+from .perception_classifier import PerceptionClassifier
+from .risk_scorer import RiskScorer
 
 class AgentTask:
     def __init__(self, agent_id, handler_service):

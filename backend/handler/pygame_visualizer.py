@@ -3,8 +3,8 @@ import yaml
 import colorsys
 from pathlib import Path
 
-from handler.training_sandbox import TrainingSandboxEnv, Cell
-from handler.rl_policy import DQNAgent
+from .training_sandbox import TrainingSandboxEnv, Cell
+from .rl_policy import DQNAgent
 
 CELL_SIZE = 40
 FPS = 10

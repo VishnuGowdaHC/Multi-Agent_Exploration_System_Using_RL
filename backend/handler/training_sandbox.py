@@ -2,11 +2,11 @@ import numpy as np
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from handler.local_risk_map import LocalRiskMap
-from handler.risk_scorer import RiskScorer
-from handler.pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
-from coordinator.occupancy_grid import OccupancyGrid
-from coordinator.voronoi_partition import VoronoiPartitioner
+from .local_risk_map import LocalRiskMap
+from .risk_scorer import RiskScorer
+from .pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
+from ..coordinator.occupancy_grid import GlobalOccupancyGrid
+from ..coordinator.voronoi_partition import VoronoiPartitioner
 
 class Cell(IntEnum):
     EMPTY = 0
@@ -63,7 +63,7 @@ class TrainingSandboxEnv:
         self.agents = []
         
         # Use the actual OccupancyGrid structure
-        self.occupancy_grid = OccupancyGrid(width=grid_size, height=grid_size, resolution=1.0)
+        self.occupancy_grid = GlobalOccupancyGrid(physical_width=grid_size, physical_height=grid_size, resolution=1.0)
         self.agent_registry = MockAgentRegistry()
 
     def reset(self):
@@ -77,7 +77,7 @@ class TrainingSandboxEnv:
         zone_assignments = partitioner.compute_partitions()
 
         for i, agent in enumerate(self.agents):
-            agent.local_map = LocalRiskMap(physical_width=self.grid_size, physical_height=self.grid_size, resolution=1.0)
+            agent.local_map = LocalRiskMap(grid_size=self.grid_size, resolution=1.0)
             agent.local_map.grid = np.copy(self.occupancy_grid.grid)
             
             # Map the 1D cell list from Voronoi into a 2D mask

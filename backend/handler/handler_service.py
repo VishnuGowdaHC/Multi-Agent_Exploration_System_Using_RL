@@ -1,9 +1,9 @@
 import asyncio
 import json
 import websockets
-from agent_task import AgentTask
+from .agent_task import AgentTask
 #from mesh_manager import MeshManager
-from comms_client import CommsClient
+from .comms_client import CommsClient
 
 class AgentHandlerService:
     def __init__(self, num_agents, coordinator_uri="ws://127.0.0.1:8765", unity_port=8766):
