@@ -1,10 +1,13 @@
 rewards:
   r_explore: 10.0
-  r_death: -50.0
-  r_overlap: -5.0
+  r_death: -40.0
+  r_overlap: -1.5
   r_unnecessary_retreat: -2.0
-  r_risk_exposure: -1.0
-  r_hold_penalty: -0.5
+  r_risk_exposure: -2.0
+  r_reroute_penalty: -1.0
+  r_mark_danger: 2.0
+  r_reassignment: -10.0
+
 
 hyperparameters:
   gamma: 0.99

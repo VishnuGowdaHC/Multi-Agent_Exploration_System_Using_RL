@@ -25,8 +25,8 @@ class VoronoiPartitioner:
                 agent_ids.append(agent_id)
 
         w, h = self.occupancy_grid.width, self.occupancy_grid.height
-        dummpy_points = [[-w, -h], [w*2, -h], [w*2, h*2], [-w, h*2]]
-        all_points = np.vstack([agent_seeds, dummpy_points])
+        dummy_points = [[-w, -h], [w*2, -h], [w*2, h*2], [-w, h*2]]
+        all_points = np.vstack([agent_seeds, dummy_points])
 
         vor = Voronoi(all_points)
 

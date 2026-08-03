@@ -29,19 +29,6 @@ class AgentRegistry:
         if agent_id in self.agents:
             self.agents[agent_id]["status"] = "dead"
 
-    def get_nearest_active_agent(self, orphaned_centroid):
-        nearest_agent_id = None
-        min_distance = float('inf')
-
-        for agent_id, data in self.agents.items():
-            if data["status"] == "alive" and data["position"] is not None:
-                # Calculates Euclidean distance to find the closest surviving peer
-                dist = math.dist(data["position"], orphaned_centroid)
-                if dist < min_distance:
-                    min_distance = dist
-                    nearest_agent_id = agent_id
-
-        return nearest_agent_id
 
     def get_all_active_agents(self):
         return [aid for aid, data in self.agents.items() if data["status"] == "alive"]

@@ -1,6 +1,6 @@
 import asyncio
 import numpy as np
-
+from pathlib import Path
 from .pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
 from .local_risk_map import LocalRiskMap
 from .rl_policy import DQNAgent
@@ -23,10 +23,15 @@ class AgentTask:
         self.perception = PerceptionClassifier()
         self.risk_scorer = RiskScorer()
         self.policy = DQNAgent()
+        
+        checkpoint_path = Path(__file__).parent / "checkpoints" / "framework_v1_final.pt"
 
-        self.policy.load()
+        if checkpoint_path.exists():
+            self.policy.load(checkpoint_path)
+        else:
+            print(f"Warning: no checkpoint found at {checkpoint_path}, agent {agent_id} running with untrained weights")
 
-        asyncio.creat_task(self.run())
+        asyncio.create_task(self.run())
 
     async def run(self):
         print(f"Agent {self.agent_id} running...")

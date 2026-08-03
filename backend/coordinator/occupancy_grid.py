@@ -23,8 +23,8 @@ class GlobalOccupancyGrid:
             g_x, g_z = self.world_to_grid(delta["x"], delta["z"])
 
             # 0 = Unexplored, 1 = Explored, -1 = Impassable/Obstacle
-            self.grid[g_x][g_z] = delta["state"]
+            self.grid[g_z][g_x] = delta["state"]
 
     def get_unexplored_cells(self):
-        uneplored_indices = np.argwhere(self.grid == 0)
-        return uneplored_indices.tolist()
+        unexplored_indices = np.argwhere(self.grid == 0)
+        return [(int(x), int(z)) for z, x in unexplored_indices]

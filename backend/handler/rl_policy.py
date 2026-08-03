@@ -20,7 +20,7 @@ class QNetwork(nn.Module):
         return self.net(x)
 
 class DQNAgent:
-    def __init__(self, state_dim=6, action_dim=5, config=None):
+    def __init__(self, state_dim=6, action_dim=4, config=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.action_dim = action_dim
 
@@ -45,16 +45,21 @@ class DQNAgent:
 
     def train_step(self, replay_buffer, batch_size=64):
         if len(replay_buffer) < batch_size:
-            return None  # not enough data yet
+            return None, None  # FIX: Return two Nones so unpacking doesn't crash
 
         states, actions, rewards, next_states, dones = replay_buffer.sample(batch_size, self.device)
 
         q_values = self.online_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        
+        # ADD THIS: Calculate the average Q-value for the batch
+        avg_q = q_values.mean().item()
 
-        with torch.no_grad(): #double dqn bellman target
+        with torch.no_grad(): # double dqn bellman target
             next_actions = self.online_net(next_states).argmax(dim=1)
             next_q = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
-            target = (rewards * 0.1) + self.gamma * next_q * (1.0 - dones)
+            
+            # (Assuming you already removed the * 0.1 here as discussed)
+            target = rewards + self.gamma * next_q * (1.0 - dones)
 
         loss = nn.functional.smooth_l1_loss(q_values, target)
         self.optimizer.zero_grad()
@@ -62,7 +67,8 @@ class DQNAgent:
         torch.nn.utils.clip_grad_norm_(self.online_net.parameters(), max_norm=10.0)
         self.optimizer.step()
 
-        return loss.item()
+        # FIX: Return both values to match train.py
+        return loss.item(), avg_q
 
     def update_target(self):
         self.target_net.load_state_dict(self.online_net.state_dict())

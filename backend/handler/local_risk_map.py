@@ -25,15 +25,15 @@ class LocalRiskMap:
 
         for x, z in zone_cells:
             if 0 <= x < self.grid_width and 0 <= z < self.grid_height:
-                self.zone_mask[x,z] = True
+                self.zone_mask[z,x] = True
 
     def mark_explored(self, grid_pos):
         gx, gz = grid_pos
-        self.explored[gx, gz] = True
+        self.explored[gz, gx] = True
 
     def mark_impassable(self, grid_pos):
         gx, gz = grid_pos
-        self.grid[gx, gz] = 1 # impassable/obstacle
+        self.grid[gz, gx] = 1 # impassable/obstacle
 
     def get_coverage_pct(self):
         zone_size = np.sum(self.zone_mask)
@@ -60,6 +60,7 @@ class LocalRiskMap:
                     target_z = hz + j
 
                     if 0 <= target_x < self.grid_width and 0 <= target_z < self.grid_height:
-                        cost_map[target_x, target_z] = max(cost_map[target_x, target_z], lethality)
+                        cost_map[target_z, target_x] = max(cost_map[target_z, target_x], lethality)
+
 
         return cost_map

@@ -15,9 +15,8 @@ class Cell(IntEnum):
 class Decision(IntEnum):
     CONTINUE = 0
     REROUTE = 1
-    HOLD = 2
-    MARK_DANGER = 3
-    REQUEST_REASSIGNMENT = 4
+    MARK_DANGER = 2
+    REQUEST_REASSIGNMENT = 3
 
 @dataclass
 class Threat:
@@ -35,7 +34,9 @@ class AgentState:
     awaiting_decision: bool = False
     pending_cell: tuple = None
     threat_history: bool = False
-    hold_streak: int = 0
+    marked_threats: set = field(default_factory=set) 
+    stuck_ticks: int = 0
+    last_position: tuple = None
 
 class MockAgentRegistry:
     def __init__(self):
@@ -52,27 +53,34 @@ class TrainingSandboxEnv:
         
         rewards = rewards_config or {}
         self.r_explore = rewards.get("r_explore", 10.0)
-        self.r_death = rewards.get("r_death", -50.0)
-        self.r_overlap = rewards.get("r_overlap", -5.0)
-        self.r_unnecessary_retreat = rewards.get("r_unnecessary_retreat", -2.0)
-        self.r_risk_exposure = rewards.get("r_risk_exposure", -1.0)
-        self.r_hold_penalty = rewards.get("r_hold_penalty", -0.5)
+        self.r_death = rewards.get("r_death", -40.0)
+        self.r_risk_exposure = rewards.get("r_risk_exposure", -2.0)
+        self.r_reroute_penalty = rewards.get("r_reroute_penalty", -1.0)
+        self.r_mark_danger = rewards.get("r_mark_danger", 2.0)
+        self.r_reassignment = rewards.get("r_reassignment", -10.0)
+        self.r_overlap = rewards.get("r_overlap", -1.5)
 
         self.risk_scorer = RiskScorer()
         self.threats = []
         self.agents = []
+        self.stuck_overrides_this_episode = 0  
         
-        # Use the actual OccupancyGrid structure
         self.occupancy_grid = GlobalOccupancyGrid(physical_width=grid_size, physical_height=grid_size, resolution=1.0)
         self.agent_registry = MockAgentRegistry()
 
+        # Team-level ground truth: separate from each agent's private local_map.explored.
+        # Used to detect overlap (a cell another agent already covered) and to report
+        # genuine collective coverage, since per-agent coverage can double-count.
+        self.global_explored = np.zeros((grid_size, grid_size), dtype=bool)
+
     def reset(self):
+        self.stuck_overrides_this_episode = 0
         self.occupancy_grid.grid = np.zeros((self.grid_size, self.grid_size), dtype=np.int8)
+        self.global_explored = np.zeros((self.grid_size, self.grid_size), dtype=bool)
         self._place_obstacles()
         self._place_agents()
         self._place_threats()
         
-        # Use the actual Voronoi Partitioner
         partitioner = VoronoiPartitioner(self.occupancy_grid, self.agent_registry)
         zone_assignments = partitioner.compute_partitions()
 
@@ -80,10 +88,10 @@ class TrainingSandboxEnv:
             agent.local_map = LocalRiskMap(grid_size=self.grid_size, resolution=1.0)
             agent.local_map.grid = np.copy(self.occupancy_grid.grid)
             
-            # Map the 1D cell list from Voronoi into a 2D mask
             if i in zone_assignments:
                 agent.local_map.update_zone_mask(zone_assignments[i])
             agent.local_map.mark_explored((agent.x, agent.z))
+            self._mark_globally_explored(agent.x, agent.z)
 
         return self._get_obs()
 
@@ -103,7 +111,6 @@ class TrainingSandboxEnv:
                 x, z = self.rng.integers(0, self.grid_size, size=2)
                 if self.occupancy_grid.grid[z, x] == Cell.EMPTY and not any(a.x == x and a.z == z for a in self.agents):
                     self.agents.append(AgentState(x=x, z=z))
-                    # Register mock position for Voronoi logic
                     self.agent_registry.agents[i] = {"position": {"x": x, "z": z}}
                     break
 
@@ -147,11 +154,35 @@ class TrainingSandboxEnv:
                 dones[i] = True
                 continue
 
+            # Continuous hazard exposure: standing inside (or ending up inside) a
+            # lethal radius is dangerous every tick you remain there — not just
+            # the tick you stepped in. Without this, an agent that goes idle
+            # (no path, or gated out of decisions) sits in a lethal cell forever
+            # with zero risk ever assessed.
+            standing_risk = self.risk_scorer.calculate_cell_risk(agent.x, agent.z, active_threats)
+            if standing_risk > 0 and self.rng.random() < min(standing_risk, 1.0) * 0.15:
+                agent.alive = False
+                rewards[i] += self.r_death
+                dones[i] = True
+                self._recompute_voronoi_zones()
+                continue
+
+            if agent.last_position == (agent.x, agent.z):
+                agent.stuck_ticks += 1
+            else:
+                agent.stuck_ticks = 0
+                agent.last_position = (agent.x, agent.z)
+
             if agent.awaiting_decision:
                 action = decision_actions.get(i)
                 if action is None:
                     decisions_needed.append(i)
                     continue
+
+                if agent.stuck_ticks >= 6:
+                    action = Decision.CONTINUE
+                    agent.stuck_ticks = 0
+                    self.stuck_overrides_this_episode += 1
 
                 target_x, target_z = agent.pending_cell
                 agent.awaiting_decision = False
@@ -159,39 +190,71 @@ class TrainingSandboxEnv:
                 
                 immediate_risk = self.risk_scorer.calculate_cell_risk(agent.x, agent.z, active_threats)
 
-                if action != Decision.HOLD:
-                    agent.hold_streak = 0
-
                 if action == Decision.CONTINUE:
                     agent.x, agent.z = target_x, target_z
+                    
+                    # THE FIX: Close the immortality gate so they can be re-evaluated near hazards
+                    agent.threat_history = False 
+                    
+                    if agent.path and agent.path[0] == (target_x, target_z):
+                        agent.path.pop(0)
+
                     if not agent.local_map.explored[agent.z, agent.x]:
                         agent.local_map.mark_explored((agent.x, agent.z))
-                        rewards[i] += self.r_explore
+                        if self.global_explored[agent.z, agent.x]:
+                            # Another agent already covered this cell — no net gain for the team
+                            rewards[i] += self.r_overlap
+                        else:
+                            rewards[i] += self.r_explore
+                            self._mark_globally_explored(agent.x, agent.z)
+
+                    new_risk = self.risk_scorer.calculate_cell_risk(agent.x, agent.z, active_threats)
                     
-                    if immediate_risk > 0 and self.rng.random() < min(immediate_risk, 1.0) * 0.15:
+                    if new_risk > 0 and self.rng.random() < min(new_risk, 1.0) * 0.15:
                         agent.alive = False
                         rewards[i] += self.r_death
                         dones[i] = True
+                        self._recompute_voronoi_zones()
                     else:
                         rewards[i] += self.r_risk_exposure
 
                 elif action == Decision.REROUTE:
-                    hazard_cost_map = np.zeros((self.grid_size, self.grid_size), dtype=np.float32)
-                    for t in active_threats:
-                        hazard_cost_map += agent.local_map.build_hazard_cost_map(t['pos'], t['features'])
-                        
-                    target = find_safe_frontier(
-                        agent.local_map.explored, agent.local_map.zone_mask, 
-                        agent.local_map.grid, (agent.x, agent.z), 
-                        lambda cx, cz: self.risk_scorer.calculate_cell_risk(cx, cz, active_threats)
-                    )
-                    if target:
-                        new_path = astar_with_hazard(agent.local_map.grid, hazard_cost_map, (agent.x, agent.z), target)
-                        agent.path = new_path[1:] if new_path else []
+                    agent.threat_history = False
+                    new_route = self._compute_reroute(agent, active_threats)
+                    if not new_route:
+                        rewards[i] += -15.0 
+                    else:
+                        rewards[i] += self.r_reroute_penalty 
+                    agent.path = new_route
 
-                elif action == Decision.HOLD:
-                    agent.hold_streak += 1
-                    rewards[i] += self.r_unnecessary_retreat if agent.hold_streak >= 3 else self.r_hold_penalty
+                elif action == Decision.MARK_DANGER:
+                    agent.threat_history = False
+                    nearby_threat = min(active_threats, key=lambda t: (t['pos'][0] - target_x)**2 + (t['pos'][1] - target_z)**2, default=None)
+                    threat_id = nearby_threat['pos'] if nearby_threat else (target_x, target_z)
+                    
+                    if threat_id not in agent.marked_threats:
+                        agent.marked_threats.add(threat_id)
+                        rewards[i] += self.r_mark_danger  
+                    else:
+                        rewards[i] += self.r_risk_exposure 
+                        
+                    new_route = self._compute_reroute(agent, active_threats)
+                    if not new_route:
+                        rewards[i] += -15.0
+                    else:
+                        rewards[i] += self.r_reroute_penalty 
+                        
+                    agent.path = new_route
+
+                elif action == Decision.REQUEST_REASSIGNMENT:
+                    agent.threat_history = False
+                    self._recompute_voronoi_zones()
+                    new_route = self._compute_reroute(agent, active_threats)
+                    if not new_route:
+                        rewards[i] += -15.0
+                    else:
+                        rewards[i] += self.r_reassignment
+                    agent.path = new_route
 
                 info[i]["risk"] = immediate_risk
                 continue
@@ -202,8 +265,12 @@ class TrainingSandboxEnv:
 
             next_x, next_z = agent.path[0]
             risk_ahead = self.risk_scorer.calculate_cell_risk(next_x, next_z, active_threats)
+            current_risk = self.risk_scorer.calculate_cell_risk(agent.x, agent.z, active_threats)
             
-            if risk_ahead > 0.02:
+            if risk_ahead < 0.01:
+                agent.threat_history = False
+
+            if risk_ahead > 0.02 and risk_ahead > current_risk and not agent.threat_history:
                 agent.awaiting_decision = True
                 agent.pending_cell = (next_x, next_z)
                 agent.threat_history = True
@@ -215,23 +282,38 @@ class TrainingSandboxEnv:
             
             if not agent.local_map.explored[agent.z, agent.x]:
                 agent.local_map.mark_explored((agent.x, agent.z))
-                rewards[i] += self.r_explore
+                if self.global_explored[agent.z, agent.x]:
+                    rewards[i] += self.r_overlap
+                else:
+                    rewards[i] += self.r_explore
+                    self._mark_globally_explored(agent.x, agent.z)
 
-        # Calculate localized coverage to determine if everyone is done
         local_coverages = [self._get_local_coverage(a) for a in self.agents]
         all_finished = all(cov >= 0.85 or not a.alive for a, cov in zip(self.agents, local_coverages))
         dones["__all__"] = all(dones.values()) or all_finished
         info["decisions_needed"] = decisions_needed
+        info["stuck_overrides"] = self.stuck_overrides_this_episode
 
         return self._get_obs(), rewards, dones, info
 
     def _get_local_coverage(self, agent):
-        """Calculates coverage strictly within the agent's assigned Voronoi zone."""
         zone_cells = agent.local_map.zone_mask
         if not np.any(zone_cells):
-            return 1.0 # Zone is empty
+            return 0.0 
         explored_in_zone = np.logical_and(agent.local_map.explored, zone_cells)
         return explored_in_zone.sum() / zone_cells.sum()
+
+    def _mark_globally_explored(self, x, z):
+        self.global_explored[z, x] = True
+
+    def get_global_coverage(self):
+        """Honest team-level coverage: unique cells explored across ALL agents,
+        not the mean of each agent's own (possibly overlapping) percentage.
+        This is the number that should go in the paper, not avg_coverage."""
+        explorable = (self.occupancy_grid.grid == Cell.EMPTY)
+        if not np.any(explorable):
+            return 1.0
+        return float(np.logical_and(self.global_explored, explorable).sum() / explorable.sum())
 
     def _get_obs(self):
         obs = {}
@@ -243,7 +325,6 @@ class TrainingSandboxEnv:
             else:
                 risk = self.risk_scorer.calculate_cell_risk(agent.x, agent.z, active_threats)
             
-            # FIXED: Uses local coverage, making the handler fully independent
             local_coverage_pct = self._get_local_coverage(agent)
                 
             obs[i] = np.array([
@@ -256,3 +337,32 @@ class TrainingSandboxEnv:
             ], dtype=np.float32)
             
         return obs
+
+    def _compute_reroute(self, agent, active_threats):
+        hazard_cost_map = np.zeros((self.grid_size, self.grid_size), dtype=np.float32)
+        for t in active_threats:
+            hazard_cost_map += agent.local_map.build_hazard_cost_map(t['pos'], t['features'])
+
+        target = find_safe_frontier(
+            agent.local_map.explored, agent.local_map.zone_mask,
+            agent.local_map.grid, (agent.x, agent.z),
+            lambda cx, cz: self.risk_scorer.calculate_cell_risk(cx, cz, active_threats)
+        )
+        if target:
+            new_path = astar_with_hazard(agent.local_map.grid, hazard_cost_map, (agent.x, agent.z), target)
+            return new_path[1:] if new_path else []
+        return []
+
+    def _recompute_voronoi_zones(self):
+        alive_ids = [i for i, a in enumerate(self.agents) if a.alive]
+
+        self.agent_registry.agents = {
+            i: {"position": {"x": self.agents[i].x, "z": self.agents[i].z}}
+            for i in alive_ids
+        }
+
+        partitioner = VoronoiPartitioner(self.occupancy_grid, self.agent_registry)
+        zone_assignments = partitioner.compute_partitions()
+
+        for i in alive_ids:
+            self.agents[i].local_map.update_zone_mask(zone_assignments.get(i, []))

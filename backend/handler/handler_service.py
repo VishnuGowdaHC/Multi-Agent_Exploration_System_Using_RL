@@ -78,6 +78,9 @@ class AgentHandlerService:
                         "type": "zone_update",
                         "cells": payload.get("zone_cells")
                     })
+                    
+            if msg_type == "occupancy_update":
+                await self.comms_client.send_to_unity("occupancy_update", agent_id, payload)
 
     async def _route_unity_message(self, data):
         agent_id = data.get("agent_id")

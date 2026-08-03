@@ -39,7 +39,7 @@ class CoordinatorWSServer:
         payload = data.get("payload", {})
 
         if msg_type == "headler_ready":
-            await self._headle_startup(payload)
+            await self._handle_startup(payload)
 
         elif msg_type == "heartbeat":
             self.heartbeat.process_heartbeat(agent_id, data.get("timestamp"))
@@ -60,9 +60,11 @@ class CoordinatorWSServer:
             await self._execute_reassignment(agent_id, payload.get("orphaned_cells", []), is_fatal=False)
 
         elif msg_type == "state_sync":
-            self.occ_grid.update_cells(payload.get("map_deltas", []))
+            deltas = payload.get("map_deltas", [])
+            self.occ_grid.update_cells(deltas)
+            await self.send_message("occupancy_update", agent_id, {"cells": deltas})
 
-    async def _handle_startuo(self, payload):
+    async def _handle_startup(self, payload):
         agents = payload.get("agents", {})
         for agent in agents:
             self.registry.register_agent(agent["id"], agent["start_coords"])
