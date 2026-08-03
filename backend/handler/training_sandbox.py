@@ -117,6 +117,7 @@ class TrainingSandboxEnv:
     def _place_threats(self):
         threat_configs = [
             {"lethality": 0.85, "radius": 2.0, "persistence": "static"},
+            
             {"lethality": 0.03, "radius": 2.0, "persistence": "static"},
         ]
         self.threats = []
