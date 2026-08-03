@@ -23,9 +23,15 @@ class LocalRiskMap:
     def update_zone_mask(self, zone_cells):
         self.zone_mask.fill(False)
 
-        for x, z in zone_cells:
+        for cell in zone_cells:
+            # FIX: Gracefully handle JSON dicts or raw tuples
+            if isinstance(cell, dict):
+                x, z = cell['x'], cell['z']
+            else:
+                x, z = cell
+                
             if 0 <= x < self.grid_width and 0 <= z < self.grid_height:
-                self.zone_mask[z,x] = True
+                self.zone_mask[z, x] = True
 
     def mark_explored(self, grid_pos):
         gx, gz = grid_pos

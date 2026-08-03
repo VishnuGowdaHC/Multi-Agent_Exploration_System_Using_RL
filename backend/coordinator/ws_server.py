@@ -38,7 +38,7 @@ class CoordinatorWSServer:
         agent_id = data.get("agent_id")
         payload = data.get("payload", {})
 
-        if msg_type == "headler_ready":
+        if msg_type == "handler_ready":
             await self._handle_startup(payload)
 
         elif msg_type == "heartbeat":

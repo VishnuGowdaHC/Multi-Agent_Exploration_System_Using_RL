@@ -1,17 +1,17 @@
-tiger:
+Wolf:
   lethality: 0.85
   radius_m: 6.0
   persistence: "static"
-  detectability: 0.7
+  
 
-deer:
+Cow:
   lethality: -0.05
   radius_m: 1.0
   persistence: "static"
-  detectability: 0.9
+  
 
-wasp_swarm:
+wasp:
   lethality: 0.30
   radius_m: 2.0
   persistence: "static"
-  detectability: -0.3
+ 

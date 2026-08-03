@@ -30,4 +30,4 @@ class GlobalRiskMap:
                     target_z = center_z + j
 
                     if 0 <= target_x < self.width and 0 <= target_z < self.height:
-                        self.risk_grid[target_z][target_x] = max(self.risk_grid[target_x][target_z], risk_scalar)
+                        self.risk_grid[target_z][target_x] = max(self.risk_grid[target_z][target_x], risk_scalar)

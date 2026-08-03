@@ -22,7 +22,8 @@ TEXT_DIM = (140, 140, 150)
 TEXT_ACCENT = (120, 200, 255)
 DEAD_MARK = (200, 60, 60)
 THREAT_HIGH = (255, 70, 70)
-THREAT_LOW = (255, 210, 90)
+THREAT_MED = (255, 210, 90)
+THREAT_LOW = (144, 238, 144)
 PAUSED_TEXT = (255, 200, 80)
 
 
@@ -204,7 +205,12 @@ class PygameVisualizer:
         for threat in self.env.threats:
             cx = int(threat.x * CELL_SIZE + CELL_SIZE / 2)
             cz = int(threat.z * CELL_SIZE + CELL_SIZE / 2)
-            color = THREAT_HIGH if threat.features["lethality"] > 0.5 else THREAT_LOW
+            if threat.features["lethality"] > 0.5:
+                color = THREAT_HIGH if threat.features["lethality"] > 0.5 else THREAT_LOW
+            elif threat.features["lethality"] > 0 and threat.features["lethality"] < 0.5:
+                color = THREAT_MED 
+            else: color = THREAT_LOW
+
             radius = int((threat.features["radius"] / 1.0) * CELL_SIZE)
 
             surface = pygame.Surface((self.grid_size * CELL_SIZE, self.grid_size * CELL_SIZE), pygame.SRCALPHA)

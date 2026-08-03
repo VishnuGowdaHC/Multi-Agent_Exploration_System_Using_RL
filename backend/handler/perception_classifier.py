@@ -9,7 +9,6 @@ class PerceptionClassifier:
             "lethality": 1.0,
             "radius": 1.0,
             "persistence": "static",
-            "detectability": 1.0
         }
         self._load_config()
 

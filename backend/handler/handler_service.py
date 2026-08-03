@@ -59,7 +59,7 @@ class AgentHandlerService:
                 await self._route_unity_message(data)
         except websockets.exceptions.ConnectionClosed:
             print("Unity WebSocket closed")
-            self.comms_client.set_unity_socket(None)
+            self.comms_client.set_unity_ws(None)
 
     async def _listen_to_coordinator(self, ws):
         async for message in ws:
