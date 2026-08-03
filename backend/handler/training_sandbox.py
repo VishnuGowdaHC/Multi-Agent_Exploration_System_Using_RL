@@ -288,8 +288,8 @@ class TrainingSandboxEnv:
                     rewards[i] += self.r_explore
                     self._mark_globally_explored(agent.x, agent.z)
 
-        local_coverages = [self._get_local_coverage(a) for a in self.agents]
-        all_finished = all(cov >= 0.85 or not a.alive for a, cov in zip(self.agents, local_coverages))
+        global_cov = self.get_global_coverage()
+        all_finished = (global_cov >= 0.85)
         dones["__all__"] = all(dones.values()) or all_finished
         info["decisions_needed"] = decisions_needed
         info["stuck_overrides"] = self.stuck_overrides_this_episode
@@ -366,3 +366,4 @@ class TrainingSandboxEnv:
 
         for i in alive_ids:
             self.agents[i].local_map.update_zone_mask(zone_assignments.get(i, []))
+            self.agents[i].local_map.explored = np.copy(self.global_explored)
