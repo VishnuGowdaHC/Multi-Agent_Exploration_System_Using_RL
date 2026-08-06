@@ -6,7 +6,7 @@ from .agent_task import AgentTask
 from .comms_client import CommsClient
 
 class AgentHandlerService:
-    def __init__(self, num_agents, coordinator_uri="ws://127.0.0.1:8765", unity_port=8766):
+    def __init__(self, num_agents, coordinator_uri="ws://127.0.0.1:8000/ws", unity_port=8766):
         self.num_agents = num_agents
         self.coordinator_uri = coordinator_uri
         self.unity_port = unity_port
@@ -27,7 +27,7 @@ class AgentHandlerService:
 
         #Unity
         print("Loading Unity...")
-        async with websockets.serve(self._handle_unity_connection, "127.0.0.1", self.unity_port):
+        async with websockets.serve(self._handle_unity_connection, "127.0.0.1", self.unity_port, subprotocols=None):
             await asyncio.Future()
 
     async def _connect_to_coordinator(self):
@@ -37,7 +37,7 @@ class AgentHandlerService:
                 print("Connected to Coordinator WebSocket")
 
                 payload = {
-                    "agents": [{"id": i, "start_coords": {"x": i * 10, "z": 0}} for i in range(self.num_agents)]
+                    "agents": [{"id": i, "start_coords": {"x": i * 7, "z": 0}} for i in range(self.num_agents)]
                 }
                 
                 await self.comms_client.send_to_coordinator("handler_ready", "system", payload)
@@ -50,12 +50,21 @@ class AgentHandlerService:
             #self.mesh_manager.evaluate_connection_loss()
 
     async def _handle_unity_connection(self, ws):
+        print("Unity WebSocket connection accepted, setting up...")
         self.comms_client.set_unity_ws(ws)
         print("Connected to Unity WebSocket")
 
         try:
             async for message in ws:
-                data = json.loads(message)
+                if message == "ping":
+                    continue  # heartbeat, not a JSON envelope
+
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    print(f"[handler] Ignoring non-JSON message: {message!r}")
+                    continue
+
                 await self._route_unity_message(data)
         except websockets.exceptions.ConnectionClosed:
             print("Unity WebSocket closed")
@@ -83,6 +92,8 @@ class AgentHandlerService:
                 await self.comms_client.send_to_unity("occupancy_update", agent_id, payload)
 
     async def _route_unity_message(self, data):
+        if data.get("type") == "heartbeat":
+            return 
         agent_id = data.get("agent_id")
         if agent_id in self.agent_tasks:
             await self.agent_tasks[agent_id].inbox.put(data)

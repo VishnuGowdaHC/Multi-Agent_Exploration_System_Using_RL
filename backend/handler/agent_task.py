@@ -6,6 +6,9 @@ from .local_risk_map import LocalRiskMap
 from .rl_policy import DQNAgent
 from .perception_classifier import PerceptionClassifier
 from .risk_scorer import RiskScorer
+import os
+import csv
+import time
 
 class AgentTask:
     def __init__(self, agent_id, handler_service):
@@ -15,20 +18,30 @@ class AgentTask:
         self.inbox = asyncio.Queue()
 
         # FIX: Match sandbox resolution (1.0) so state vector normalization aligns
-        self.local_map = LocalRiskMap(grid_size=15, resolution=1.0)
+        self.local_map = LocalRiskMap(grid_size=30, resolution=1)
         self.assigned_zone = []
         self.current_pos = (0, 0)
         self.path = []
         
         # FIX: Track continuous threat exposure exactly like the sandbox
         self.threat_history = False
-        self.last_risk = 0.0
+        self.last_risk_by_threat = {}
 
         self.perception = PerceptionClassifier()
         self.risk_scorer = RiskScorer()
         self.policy = DQNAgent(state_dim=6, action_dim=4) 
         
         checkpoint_path = Path(__file__).parent / "checkpoints" / "framework_v1_final.pt"
+
+        self.log_file = "python_telemetry.csv"
+        # Write headers only if the file doesn't exist yet
+        if not os.path.exists(self.log_file):
+            with open(self.log_file, mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "timestamp", "agent_id", "event_trigger", "rl_action_idx", 
+                    "risk_scalar", "threat_history", "grid_x", "grid_z", "path_length"
+                ])
 
         if checkpoint_path.exists():
             self.policy.load(checkpoint_path)
@@ -48,15 +61,31 @@ class AgentTask:
                 await self._handle_zone_update(event["cells"])
 
             elif event_type == "waypoint_reached":
-                await self._handle_waypoint_reached(event["pos"])
+                await self._handle_waypoint_reached(event["payload"]["pos"])
 
             elif event_type == "obstacle_blocked":
-                await self._handle_obstacle_blocked(event["obstacle_pos"])
+                await self._handle_obstacle_blocked(event["payload"]["obstacle_pos"], event["payload"].get("size"))
 
             elif event_type == "sensor_detection":
-                await self._handle_sensor_detection(event["tags"], event["distance"], event["hazard_pos"])
+                await self._handle_sensor_detection(event["payload"]["tags"], event["payload"]["distance"], event["payload"]["hazard_pos"])
+
+            elif event_type == "agent_stuck":
+                await self._handle_agent_stuck(event["payload"]["pos"])
 
             self.inbox.task_done()
+
+    async def _handle_agent_stuck(self, pos):
+        raw_x = pos['x'] if isinstance(pos, dict) else pos[0]
+        raw_z = pos['z'] if isinstance(pos, dict) else pos[1]
+        grid_pos = self.local_map.world_to_grid(raw_x, raw_z)
+
+        # Wider than the standard obstacle blast radius — the normal 3x3 clearly
+        # wasn't enough to route around whatever it's wedged against
+        self.local_map.mark_impassable(grid_pos, radius=2)
+
+        self.path = []
+        self._log_python_telemetry(event_trigger="agent_stuck")
+        await self._replan_standard()
 
     async def _handle_zone_update(self, cells):
         # FIX: Handle JSON dicts {"x": 1, "z": 2} from WebSocket
@@ -67,37 +96,62 @@ class AgentTask:
         await self._replan_standard()
 
     async def _handle_waypoint_reached(self, current_pos):
-        # FIX: Parse dict if necessary
-        self.current_pos = (current_pos['x'], current_pos['z']) if isinstance(current_pos, dict) else current_pos
+        # Extract the raw coordinates regardless of dict or list format
+        raw_x = current_pos['x'] if isinstance(current_pos, dict) else current_pos[0]
+        raw_z = current_pos['z'] if isinstance(current_pos, dict) else current_pos[1]
+        
+        # 1. Translate Unity World -> Python Grid AND force it to be a tuple
+        grid_pos = self.local_map.world_to_grid(raw_x, raw_z)
+        self.current_pos = tuple(grid_pos) # <-- This guarantees it is hashable for A*
+        
         self.local_map.mark_explored(self.current_pos)
 
         if self.path:
             next_wp = self.path.pop(0)
-            # FIX: Convert tuple to dict for Unity JSON serialization
-            await self._send_to_unity("waypoint_list", [{"x": next_wp[0], "z": next_wp[1]}])
+            world_x, world_z = self.local_map.grid_to_world(next_wp[0], next_wp[1])
+            await self._send_to_unity("waypoint_list", [{"x": world_x, "z": world_z}])
         else:
             await self._replan_standard()
 
-    async def _handle_obstacle_blocked(self, obstacle_pos):
-        obs_pos = (obstacle_pos['x'], obstacle_pos['z']) if isinstance(obstacle_pos, dict) else obstacle_pos
-        self.local_map.mark_impassable(obs_pos)
-        self.path = []
+    async def _handle_obstacle_blocked(self, obstacle_pos, size=None):
+        raw_x = obstacle_pos['x'] if isinstance(obstacle_pos, dict) else obstacle_pos[0]
+        raw_z = obstacle_pos['z'] if isinstance(obstacle_pos, dict) else obstacle_pos[1]
+        grid_pos = self.local_map.world_to_grid(raw_x, raw_z)
 
+        radius = 1
+        if size:
+            radius = max(1, int(np.ceil(max(size['x'] if isinstance(size, dict) else size[0],
+                                            size['z'] if isinstance(size, dict) else size[1]) / self.local_map.resolution / 2)))
+
+        already_blocked = self.local_map.grid[grid_pos[1], grid_pos[0]] == 1
+        self.local_map.mark_impassable(grid_pos, radius=radius)
+
+        if already_blocked and self.path:
+            return
+
+        self.path = []
+        self._log_python_telemetry(event_trigger="obstacle_hit")
         await self._replan_standard()
 
     async def _handle_sensor_detection(self, tag, distance, hazard_pos):
+        raw_x = hazard_pos['x'] if isinstance(hazard_pos, dict) else hazard_pos[0]
+        raw_z = hazard_pos['z'] if isinstance(hazard_pos, dict) else hazard_pos[1]
+
+        grid_hazard_pos = self.local_map.world_to_grid(raw_x, raw_z)
+
         feature_vector = self.perception.classify(tag)
         risk_scalar = self.risk_scorer.calculate_immediate_risk(feature_vector, distance)
 
-        # FIX: Replicate the sandbox interrupt and "coasting" logic
-        if risk_scalar < 0.01:
-            self.threat_history = False
+        key = grid_hazard_pos
+        prev_risk = self.last_risk_by_threat.get(key, 0.0)
 
-        if risk_scalar > 0.02 and risk_scalar > self.last_risk and not self.threat_history:
+        if risk_scalar < 0.01:
+            self.last_risk_by_threat.pop(key, None)
+        elif risk_scalar > 0.02 and risk_scalar > prev_risk:
             self.threat_history = True
-            await self._execute_rl_decision(risk_scalar, feature_vector, hazard_pos)
-            
-        self.last_risk = risk_scalar
+            await self._execute_rl_decision(risk_scalar, feature_vector, grid_hazard_pos)
+
+        self.last_risk_by_threat[key] = risk_scalar
 
     async def _execute_rl_decision(self, risk_scalar, feature_vector, hazard_pos):
         state_vector = np.array([
@@ -110,6 +164,8 @@ class AgentTask:
         ], dtype=np.float32)
 
         action_idx = int(self.policy.act(state_vector, epsilon=0.0))
+
+        self._log_python_telemetry(event_trigger="rl_decision", action_idx=action_idx, risk_scalar=risk_scalar)
 
         # FIX: Action Space is exactly 4 dimensions (HOLD removed)
         if action_idx == 0: # CONTINUE
@@ -130,12 +186,17 @@ class AgentTask:
                 new_path = astar_with_hazard(self.local_map.grid, hazard_cost_map, self.current_pos, target)
                 self.path = new_path[1:] if new_path else []
                 # Convert path to Unity's format
-                formatted_path = [{"x": wp[0], "z": wp[1]} for wp in self.path]
+                formatted_path = []
+                for wp in self.path:
+                    world_x, world_z = self.local_map.grid_to_world(wp[0], wp[1])
+                    formatted_path.append({"x": world_x, "z": world_z})
+                
+                print(f"[TELEMETRY] RL Action 1 sending path: {formatted_path}")
                 await self._send_to_unity("waypoint_list", formatted_path)
 
         elif action_idx == 2: # MARK_DANGER
             self.threat_history = False
-            await self.handler.send_to_coordinator(
+            await self.handler.comms_client.send_to_coordinator(
                 "threat_broadcast",
                 self.agent_id,
                 {
@@ -158,12 +219,17 @@ class AgentTask:
             if target:
                 new_path = astar_with_hazard(self.local_map.grid, hazard_cost_map, self.current_pos, target)
                 self.path = new_path[1:] if new_path else []
-                formatted_path = [{"x": wp[0], "z": wp[1]} for wp in self.path]
+                formatted_path = []
+                for wp in self.path:
+                    world_x, world_z = self.local_map.grid_to_world(wp[0], wp[1])
+                    formatted_path.append({"x": world_x, "z": world_z})
+                
+                print(f"[TELEMETRY] RL Action 2 sending path: {formatted_path}")
                 await self._send_to_unity("waypoint_list", formatted_path)
 
         elif action_idx == 3: # REQUEST_REASSIGNMENT
             self.threat_history = False
-            await self.handler.send_to_coordinator(
+            await self.handler.comms_client.send_to_coordinator(
                 "request_reassignment",
                 self.agent_id, 
                 # Ensure orphaned cells are serialized as dicts
@@ -181,9 +247,15 @@ class AgentTask:
         if target:
             full_path = astar(self.local_map.grid, self.current_pos, target)
             self.path = full_path[1:] if full_path else []
-            if self.path:
-                formatted_path = [{"x": wp[0], "z": wp[1]} for wp in self.path]
-                await self._send_to_unity("waypoint_list", formatted_path)
+            formatted_path = []
+            for wp in self.path:
+                world_x, world_z = self.local_map.grid_to_world(wp[0], wp[1])
+                formatted_path.append({"x": world_x, "z": world_z})
+
+            print(f"[TELEMETRY] Agent {self.agent_id} sending path: {formatted_path}")
+            await self._send_to_unity("waypoint_list", formatted_path)
+
+            self._log_python_telemetry(event_trigger="standard_replan")
 
     async def _send_to_unity(self, msg_type, payload):
         await self.handler.comms_client.send_to_unity(
@@ -191,3 +263,19 @@ class AgentTask:
             agent_id=self.agent_id, 
             payload=payload
         )
+
+    def _log_python_telemetry(self, event_trigger, action_idx="N/A", risk_scalar=0.0):
+        """Appends the agent's internal brain state to the CSV."""
+        with open(self.log_file, mode='a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                round(time.time(), 3),
+                self.agent_id,
+                event_trigger,
+                action_idx,
+                round(risk_scalar, 4),
+                self.threat_history,
+                self.current_pos[0],
+                self.current_pos[1],
+                len(self.path)
+            ])

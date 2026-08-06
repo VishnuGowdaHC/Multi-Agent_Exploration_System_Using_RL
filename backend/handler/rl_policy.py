@@ -51,14 +51,12 @@ class DQNAgent:
 
         q_values = self.online_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
-        # ADD THIS: Calculate the average Q-value for the batch
         avg_q = q_values.mean().item()
 
         with torch.no_grad(): # double dqn bellman target
             next_actions = self.online_net(next_states).argmax(dim=1)
             next_q = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
             
-            # (Assuming you already removed the * 0.1 here as discussed)
             target = rewards + self.gamma * next_q * (1.0 - dones)
 
         loss = nn.functional.smooth_l1_loss(q_values, target)
@@ -67,7 +65,6 @@ class DQNAgent:
         torch.nn.utils.clip_grad_norm_(self.online_net.parameters(), max_norm=10.0)
         self.optimizer.step()
 
-        # FIX: Return both values to match train.py
         return loss.item(), avg_q
 
     def update_target(self):

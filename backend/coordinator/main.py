@@ -14,15 +14,15 @@ def create_app():
 
     agent_registry = AgentRegistry()
     occupancy_grid = GlobalOccupancyGrid(
-        physical_width=100,
-        physical_height=100,
-        resolution=0.5
+        physical_width=30,
+        physical_height=30,
+        resolution=1
     )
     
     risk_map = GlobalRiskMap(
-        physical_width=100,
-        physical_height=100,
-        resolution=0.5)
+        physical_width=30,
+        physical_height=30,
+        resolution=1)
     
     voronoi_partitioner = VoronoiPartitioner(occupancy_grid, agent_registry)
 

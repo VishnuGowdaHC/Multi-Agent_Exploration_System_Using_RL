@@ -13,7 +13,7 @@ class CommsClient:
         self.unity_ws = ws
 
     async def send_to_coordinator(self, msg_type, agent_id, payload):
-        if self.coordinator_ws and not self.coordinator_ws.closed:
+        if self.coordinator_ws and self.coordinator_ws.close_code is None:
             envelope = {
                 "type": msg_type,
                 "agent_id": agent_id,
@@ -22,7 +22,7 @@ class CommsClient:
             await self.coordinator_ws.send(json.dumps(envelope))
 
     async def send_to_unity(self, msg_type, agent_id, payload):
-        if self.unity_ws and not self.unity_ws.closed:
+        if self.unity_ws and self.unity_ws.close_code is None:
             envelope = {
                 "type": msg_type,
                 "agent_id": agent_id,

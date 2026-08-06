@@ -18,6 +18,7 @@ class CoordinatorWSServer:
     def _setup_routes(self):
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
+            
             await websocket.accept()
 
             self.handler_socket = websocket

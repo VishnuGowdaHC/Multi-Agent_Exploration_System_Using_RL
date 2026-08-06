@@ -20,6 +20,11 @@ class LocalRiskMap:
 
         return grid_x, grid_z
 
+    def grid_to_world(self, grid_x, grid_z):
+        x = (grid_x * self.resolution) + (self.resolution / 2.0)
+        z = (grid_z * self.resolution) + (self.resolution / 2.0)
+        return float(x), float(z)
+
     def update_zone_mask(self, zone_cells):
         self.zone_mask.fill(False)
 
@@ -35,11 +40,15 @@ class LocalRiskMap:
 
     def mark_explored(self, grid_pos):
         gx, gz = grid_pos
-        self.explored[gz, gx] = True
+        self.explored[int(gz), int(gx)] = True
 
-    def mark_impassable(self, grid_pos):
+    def mark_impassable(self, grid_pos, radius=1):
         gx, gz = grid_pos
-        self.grid[gz, gx] = 1 # impassable/obstacle
+        for i in range(-radius, radius + 1):
+            for j in range(-radius, radius + 1):
+                nx, nz = gx + i, gz + j
+                if 0 <= nx < self.grid_width and 0 <= nz < self.grid_height:
+                    self.grid[nz, nx] = 1
 
     def get_coverage_pct(self):
         zone_size = np.sum(self.zone_mask)

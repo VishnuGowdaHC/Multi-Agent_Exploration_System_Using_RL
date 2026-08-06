@@ -1,10 +1,10 @@
-Wolf:
+wolf:
   lethality: 0.85
-  radius_m: 6.0
+  radius: 6.0
   persistence: "static"
   
 
-Cow:
+cow:
   lethality: -0.05
   radius_m: 1.0
   persistence: "static"

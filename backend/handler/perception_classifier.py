@@ -1,8 +1,12 @@
 import yaml
 import logging
+from pathlib import Path
 
 class PerceptionClassifier:
-    def __init__(self, config_path="../config/threats/jungle_demo.yml"):
+    def __init__(self, config_path=None):
+        if config_path is None:
+            config_path = Path(__file__).parent.parent / "config" / "threats" / "jungle_demo.yml"
+        
         self.config_path = config_path
         self.threat_profiles = {}
         self.default_profile = {
@@ -17,14 +21,20 @@ class PerceptionClassifier:
             with open(self.config_path, 'r') as file:
                 config_data = yaml.safe_load(file)
 
-                # Fixed: Handle direct root-level profiles or nested 'threats' key gracefully
                 if config_data:
                     if isinstance(config_data, dict):
                         if 'threats' in config_data:
-                            self.threat_profiles = config_data['threats']
+                            raw_profiles = config_data['threats']
                         else:
-                            # Treat root level keys as profiles since your YAML has tiger/deer/wasp directly at top-level
-                            self.threat_profiles = {k: v for k, v in config_data.items() if k != 'default'}
+                            raw_profiles = {k: v for k, v in config_data.items() if k != 'default'}
+
+                        normalized = {}
+                        for name, profile in raw_profiles.items():
+                            profile = dict(profile)
+                            if 'radius_m' in profile and 'radius' not in profile:
+                                profile['radius'] = profile.pop('radius_m')
+                            normalized[name.lower()] = profile
+                        self.threat_profiles = normalized
 
                         if 'default' in config_data:
                             self.default_profile = config_data['default']
