@@ -4,6 +4,7 @@ import websockets
 from .agent_task import AgentTask
 #from mesh_manager import MeshManager
 from .comms_client import CommsClient
+from .global_visualizer import AsyncGlobalMap
 
 class AgentHandlerService:
     def __init__(self, num_agents, coordinator_uri="ws://127.0.0.1:8000/ws", unity_port=8766):
@@ -14,6 +15,8 @@ class AgentHandlerService:
 
         self.agent_tasks = {}
         self.comms_client = CommsClient()
+        self.global_map = AsyncGlobalMap(grid_size=30)
+        self.agent_start_positions = {}
         #self.mesh_manager = MeshManager()
 
     async def start(self):
@@ -36,11 +39,8 @@ class AgentHandlerService:
                 self.comms_client.set_coordinator_ws(ws)
                 print("Connected to Coordinator WebSocket")
 
-                payload = {
-                    "agents": [{"id": i, "start_coords": {"x": i * 7, "z": 0}} for i in range(self.num_agents)]
-                }
-                
-                await self.comms_client.send_to_coordinator("handler_ready", "system", payload)
+                if hasattr(self, 'global_map'):
+                    asyncio.create_task(self.global_map.start())
 
                 asyncio.create_task(self._heartbeat_loop())
                 await self._listen_to_coordinator(ws)
@@ -94,10 +94,39 @@ class AgentHandlerService:
     async def _route_unity_message(self, data):
         if data.get("type") == "heartbeat":
             return 
+            
         agent_id = data.get("agent_id")
+        
+        # --- NEW CODE: Trap initial positions from Unity ---
+        if data.get("type") == "waypoint_reached" and agent_id not in self.agent_start_positions:
+            pos_data = data["payload"]["pos"]
+            # Handle both list [x, z] and dict {"x": x, "z": z}
+            raw_x = pos_data['x'] if isinstance(pos_data, dict) else pos_data[0]
+            raw_z = pos_data['z'] if isinstance(pos_data, dict) else pos_data[1]
+            
+            self.agent_start_positions[agent_id] = {"x": raw_x, "z": raw_z}
+            print(f"Captured start position for Agent {agent_id}: {self.agent_start_positions[agent_id]}")
+            
+            # Once all agents report in, fire the payload to the Coordinator
+            if len(self.agent_start_positions) == self.num_agents:
+                await self._send_handler_ready()
+        # ---------------------------------------------------
+
         if agent_id in self.agent_tasks:
             await self.agent_tasks[agent_id].inbox.put(data)
 
+    # --- NEW METHOD: Build the payload dynamically ---
+    async def _send_handler_ready(self):
+        payload = {
+            "agents": [
+                {
+                    "id": i, 
+                    "start_coords": self.agent_start_positions[i]
+                } for i in range(self.num_agents)
+            ]
+        }
+        await self.comms_client.send_to_coordinator("handler_ready", "system", payload)
+        print("All real agent coordinates verified. Sent handler_ready to Coordinator.")
     async def _heartbeat_loop(self):
         while True:
             await self.comms_client.send_to_coordinator(

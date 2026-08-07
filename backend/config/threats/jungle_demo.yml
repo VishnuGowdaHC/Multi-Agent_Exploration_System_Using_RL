@@ -1,17 +1,17 @@
 wolf:
   lethality: 0.85
-  radius: 6.0
+  radius: 4.0
   persistence: "static"
   
 
 cow:
-  lethality: -0.05
-  radius_m: 1.0
+  lethality: 0.025
+  radius_m: 2.0
   persistence: "static"
   
 
 wasp:
   lethality: 0.30
-  radius_m: 2.0
+  radius_m: 4.0
   persistence: "static"
  

@@ -3,12 +3,14 @@ import numpy as np
 from pathlib import Path
 from .pathfinder import astar, astar_with_hazard, find_frontier, find_safe_frontier
 from .local_risk_map import LocalRiskMap
+from .global_visualizer import AsyncGlobalMap
 from .rl_policy import DQNAgent
 from .perception_classifier import PerceptionClassifier
 from .risk_scorer import RiskScorer
 import os
 import csv
 import time
+import math
 
 class AgentTask:
     def __init__(self, agent_id, handler_service):
@@ -19,6 +21,7 @@ class AgentTask:
 
         # FIX: Match sandbox resolution (1.0) so state vector normalization aligns
         self.local_map = LocalRiskMap(grid_size=30, resolution=1)
+        
         self.assigned_zone = []
         self.current_pos = (0, 0)
         self.path = []
@@ -75,14 +78,23 @@ class AgentTask:
             self.inbox.task_done()
 
     async def _handle_agent_stuck(self, pos):
-        raw_x = pos['x'] if isinstance(pos, dict) else pos[0]
-        raw_z = pos['z'] if isinstance(pos, dict) else pos[1]
-        grid_pos = self.local_map.world_to_grid(raw_x, raw_z)
+        # If there is no path, just force a replan without dropping blind obstacles.
+        if not self.path:
+            self._log_python_telemetry(event_trigger="agent_stuck_nopath")
+            await self._replan_standard()
+            return
 
-        # Wider than the standard obstacle blast radius — the normal 3x3 clearly
-        # wasn't enough to route around whatever it's wedged against
-        self.local_map.mark_impassable(grid_pos, radius=2)
+        # The agent is stuck trying to physically reach the NEXT waypoint.
+        # We mark that specific target cell as the impassable blockage, not the agent's current cell.
+        next_wp = self.path[0]
+        
+        # radius=1 creates a 3x3 blocked area around the waypoint, 
+        # which is plenty to force A* to route around it.
+        self.local_map.mark_impassable(next_wp, radius=1)
 
+        print(f"[TELEMETRY] Agent {self.agent_id} stuck. Marked target waypoint {next_wp} as impassable.")
+        
+        # Clear the doomed path and ask A* for a new route
         self.path = []
         self._log_python_telemetry(event_trigger="agent_stuck")
         await self._replan_standard()
@@ -93,6 +105,11 @@ class AgentTask:
         self.assigned_zone = parsed_cells
         self.local_map.update_zone_mask(parsed_cells)
 
+        # Sync the new Voronoi partition to Unity for rendering
+        formatted_cells = [{"x": cx, "z": cz} for cx, cz in parsed_cells]
+        print(f"[DEBUG] Agent {self.agent_id} firing voronoi_sync with {len(formatted_cells)} cells.")
+        await self._send_to_unity("voronoi_sync", {"cells": formatted_cells})
+
         await self._replan_standard()
 
     async def _handle_waypoint_reached(self, current_pos):
@@ -102,9 +119,19 @@ class AgentTask:
         
         # 1. Translate Unity World -> Python Grid AND force it to be a tuple
         grid_pos = self.local_map.world_to_grid(raw_x, raw_z)
-        self.current_pos = tuple(grid_pos) # <-- This guarantees it is hashable for A*
-        
+        self.current_pos = tuple(grid_pos) 
         self.local_map.mark_explored(self.current_pos)
+        if hasattr(self.handler, 'global_map'):
+            self.handler.global_map.update_rover_position(
+                self.agent_id, 
+                raw_x, 
+                raw_z
+            )
+        await self._send_to_unity("occupancy_update", {
+            "x": self.current_pos[0],
+            "z": self.current_pos[1],
+            "state": 1
+        })
 
         if self.path:
             next_wp = self.path.pop(0)
@@ -125,6 +152,10 @@ class AgentTask:
 
         already_blocked = self.local_map.grid[grid_pos[1], grid_pos[0]] == 1
         self.local_map.mark_impassable(grid_pos, radius=radius)
+        
+        #Push the new impassable obstacle to the global map
+        if hasattr(self.handler, 'global_map'):
+            self.handler.global_map.merge_local_state(self.local_map.explored, self.local_map.grid)
 
         if already_blocked and self.path:
             return
@@ -136,11 +167,22 @@ class AgentTask:
     async def _handle_sensor_detection(self, tag, distance, hazard_pos):
         raw_x = hazard_pos['x'] if isinstance(hazard_pos, dict) else hazard_pos[0]
         raw_z = hazard_pos['z'] if isinstance(hazard_pos, dict) else hazard_pos[1]
-
+        
         grid_hazard_pos = self.local_map.world_to_grid(raw_x, raw_z)
 
         feature_vector = self.perception.classify(tag)
         risk_scalar = self.risk_scorer.calculate_immediate_risk(feature_vector, distance)
+        print(f"Lethality(in handle detection): {feature_vector} tag: {tag} distance: {distance} risk_scalar: {risk_scalar}")
+
+        if hasattr(self.handler, 'global_map') and feature_vector:
+            radius_cells = int(math.ceil(feature_vector["radius"] / self.local_map.resolution))
+            self.handler.global_map.merge_local_state(
+                self.local_map.explored, 
+                self.local_map.grid, 
+                hazard_pos=grid_hazard_pos, 
+                hazard_radius=radius_cells,  
+                tag=tag,
+            )
 
         key = grid_hazard_pos
         prev_risk = self.last_risk_by_threat.get(key, 0.0)
@@ -173,6 +215,7 @@ class AgentTask:
             
         elif action_idx == 1: # REROUTE
             self.threat_history = False
+
             hazard_cost_map = self.local_map.build_hazard_cost_map(hazard_pos, feature_vector)
             active_threats = [{'pos': (hazard_pos[0], hazard_pos[1]), 'features': feature_vector}]
             target = find_safe_frontier(
@@ -196,6 +239,7 @@ class AgentTask:
 
         elif action_idx == 2: # MARK_DANGER
             self.threat_history = False
+
             await self.handler.comms_client.send_to_coordinator(
                 "threat_broadcast",
                 self.agent_id,
@@ -265,7 +309,11 @@ class AgentTask:
         )
 
     def _log_python_telemetry(self, event_trigger, action_idx="N/A", risk_scalar=0.0):
-        """Appends the agent's internal brain state to the CSV."""
+        """Appends the agent's internal brain state to the CSV and prints live to the console."""
+        
+        # Live terminal output to track exact execution flow
+        print(f"[LIVE TELEMETRY] Agent: {self.agent_id} | Event: {event_trigger} | Pos: {self.current_pos} | Path Len: {len(self.path)} | RL Action: {action_idx}")
+
         with open(self.log_file, mode='a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([

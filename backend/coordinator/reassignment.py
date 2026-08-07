@@ -18,12 +18,14 @@ class ReassignmentHandler:
         if not orphaned_cells:
             return None, self.voronoi_partitioner.compute_partitions()
 
-        x_coords = [cell[0] for cell in orphaned_cells]
-        y_coords = [cell[1] for cell in orphaned_cells]
+        # Normalize: agent_task.py sends {"x":.., "z":..} dicts over the wire
+        parsed_cells = [(c['x'], c['z']) if isinstance(c, dict) else c for c in orphaned_cells]
+
+        x_coords = [cell[0] for cell in parsed_cells]
+        y_coords = [cell[1] for cell in parsed_cells]
         centroid = (sum(x_coords)/len(x_coords), sum(y_coords)/len(y_coords))
 
         nearest_agent_id = self._get_nearest_active_agent(centroid, active_agents)
-
         new_zone_assignment = self.voronoi_partitioner.compute_partitions()
 
         return nearest_agent_id, new_zone_assignment

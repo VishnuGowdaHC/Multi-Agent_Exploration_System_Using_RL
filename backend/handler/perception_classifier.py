@@ -48,4 +48,5 @@ class PerceptionClassifier:
 
     def classify(self, unity_tag):
         normalized_tag = str(unity_tag).strip().lower()
+        print(normalized_tag)
         return self.threat_profiles.get(normalized_tag, self.default_profile)
