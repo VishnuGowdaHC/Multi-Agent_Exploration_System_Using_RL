@@ -11,7 +11,7 @@ our paper:
 ## Architecture
 
 <p align="center">
-  <img src="docs/architecture.png" alt="Risk-Aware Semi-Centralized Multi-Agent Exploration System architecture" width="850">
+  <img src="docs/RL.jpg" alt="Risk-Aware Semi-Centralized Multi-Agent Exploration System architecture" width="850">
 </p>
 
 The system is organized into four operational layers, as proposed in the
