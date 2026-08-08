@@ -176,6 +176,4 @@ Per the paper's Section VII future-work list:
   only, not for exposing on a public network.
 
 
-## License
 
-Add your license here.
