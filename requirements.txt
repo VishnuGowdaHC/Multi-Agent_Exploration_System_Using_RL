@@ -1,0 +1,16 @@
+# --- Coordinator service (backend/coordinator) ---
+fastapi
+uvicorn[standard]
+scipy
+matplotlib
+pandas
+
+# --- Handler service (backend/handler) ---
+websockets
+numpy
+pyyaml
+torch
+pygame
+
+# Shared
+# (numpy/pyyaml/matplotlib are used by both coordinator and handler code)
