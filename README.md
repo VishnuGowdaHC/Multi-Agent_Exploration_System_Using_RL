@@ -128,8 +128,8 @@ All messages adhere to a standardized envelope:
 - **`waypoint_list`** (`Handler → Unity`): Pushes world-space target waypoints `[{"x": float, "z": float}]` calculated by A*.
 - **`sensor_detection`** (`Unity → Handler`): Emitted by [`SensorController.cs`](file:///E:/Projects/Projects/Multi-Agent/Unity/Assets/Scripts/SensorController.cs) when an entity enters the 8-meter detection sphere. Contains `tags`, `distance`, and local `hazard_pos`.
 - **`threat_broadcast`** (`Handler → Coordinator`): Emitted when an agent picks action `MARK_DANGER`, distributing hazard coordinates and risk scalar to the coordinator's global risk map.
-- **`agent_stuck`** (`Unity → Handler`): Fired when horizontal velocity remains below $0.15\text{ m/s}$ for $\ge 1.5\text{ s}$, triggering deterministic target marking as impassable and forced replanning.
-- **`heartbeat` / `heartbeat_ack`** (`Handler ↔ Coordinator`): Sent every $500\text{ ms}$. If 6 consecutive heartbeats are missed ($3.0\text{ s}$ window), timeout logging occurs.
+- **`agent_stuck`** (`Unity → Handler`): Fired when horizontal velocity remains below 0.15 m/s for 1.5 seconds or more, triggering deterministic target marking as impassable and forced replanning.
+- **`heartbeat` / `heartbeat_ack`** (`Handler ↔ Coordinator`): Sent every 500 ms. If 6 consecutive heartbeats are missed (3.0 s window), timeout logging occurs.
 
 ---
 
@@ -150,14 +150,14 @@ Hazards are never hard-coded into the intelligence stack. Danger is evaluated th
   Features = { Lethality: [0.0, 1.0], Radius: r (cells), Persistence: "static" }
                   │
                   ▼
-[Stage 4: Mathematical Risk Scoring Function]
-  Risk(d) = Lethality * (1.0 / max(d, 1.0)^2) * Radius  (if d <= Radius, else 0.0)
+[Stage 4: Distance-Based Risk Scoring]
+  Computes continuous risk scalar based on lethality, distance decay, and blast radius
 ```
 
 ### Evaluated Threat Profiles (`backend/config/threats/jungle_demo.yml`)
 As evaluated in Section IV and Table I of the paper:
 
-| Entity Tag | Lethality ($L$) | Blast Radius ($R$) | Persistence | Tactical Behavior |
+| Entity Tag | Lethality | Blast Radius | Persistence | Tactical Behavior |
 | :--- | :---: | :---: | :---: | :--- |
 | **`wolf`** | `0.85` | `4.0` cells | `static` | High-lethality threat. Triggers immediate reroute or fleet danger broadcast. Contact has an 85% casualty probability. |
 | **`wasp`** | `0.30` | `4.0` cells | `static` | Moderate threat. Inflicts continuous health degradation on proximity, penalizing prolonged path exposure. |
@@ -169,24 +169,23 @@ As evaluated in Section IV and Table I of the paper:
 
 ## Reinforcement Learning & Decision Engine
 
-Routine navigation is handled deterministically via classical A* search. The reinforcement learning policy is **invoked exclusively when an agent's `Threat Recognizer` flags an entity exceeding a risk threshold ($> 0.02$)**.
+Routine navigation is handled deterministically via classical A* search. The reinforcement learning policy is **invoked exclusively when an agent's `Threat Recognizer` flags an entity exceeding a risk threshold (> 0.02)**.
 
 ### POMDP Formulation
 Tactical decision-making is framed as a Partially Observable Markov Decision Process:
 - **Observation Space (6 Continuous Dimensions)**:
   Constructed in [`backend/handler/agent_task.py:L199-206`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/agent_task.py#L199-L206):
-  $$S_t = \left[ \frac{x}{W},\, \frac{z}{H},\, \tanh(\text{Risk}),\, \text{Coverage}_{\text{local}},\, \text{Alive},\, \text{ThreatHistory} \right]$$
-  1. $x / W$: Normalized agent X-coordinate within grid.
-  2. $z / H$: Normalized agent Z-coordinate within grid.
-  3. $\tanh(\text{Risk})$: Non-linearly scaled immediate risk scalar.
-  4. $\text{Coverage}_{\text{local}}$: Ratio of explored cells within current assigned zone.
-  5. $\text{Alive}$: Binary agent life flag ($1.0$).
-  6. $\text{ThreatHistory}$: Dynamic flag indicating prior threat encounters in current zone.
+  1. **Normalized X-coordinate**: Agent position along the X-axis (`x / width`).
+  2. **Normalized Z-coordinate**: Agent position along the Z-axis (`z / height`).
+  3. **Immediate Risk**: Non-linearly scaled risk scalar (`tanh(Risk)`).
+  4. **Local Zone Coverage**: Ratio of explored cells within current assigned zone.
+  5. **Agent Life Status**: Active status flag (1.0 if alive).
+  6. **Threat History**: Flag indicating prior threat encounters in current zone.
 
 - **Discrete Action Space (4 Dimensions)**:
   Defined in [`backend/handler/training_sandbox.py:L15-19`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/training_sandbox.py#L15-L19):
   - **`0: CONTINUE`**: Proceed along current trajectory through the flagged cell.
-  - **`1: REROUTE`**: Apply a cost multiplier ($25.0 \times \text{hazard\_cost}$) to the local costmap and compute a safe detour via `astar_with_hazard`.
+  - **`1: REROUTE`**: Apply a cost multiplier (25.0x hazard cost) to the local costmap and compute a safe detour via `astar_with_hazard`.
   - **`2: MARK_DANGER`**: Emit a `threat_broadcast` to update the coordinator's global risk map, saving peer agents from redundant encounters, followed by a local reroute.
   - **`3: REQUEST_REASSIGNMENT`**: Hand the remainder of the agent's assigned zone back to the coordinator for redistribution to surviving peers.
 
@@ -194,8 +193,8 @@ Tactical decision-making is framed as a Partially Observable Markov Decision Pro
 Earlier system iterations exposed a critical failure mode: agents utilizing a learned `Hold` action froze indefinitely when facing contaminated frontiers, allowing the agent to "hide" from death penalties while exploration stalled.
 - **Architectural Solution**:
   1. `Hold` was completely excised from the action space.
-  2. [`find_safe_frontier()`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/pathfinder.py#L122-L151) pre-filters frontier candidates against cell risk ($\le 0.02$) before invoking A*, guaranteeing the planner never targets a contaminated cell unless the entire zone is impassable.
-  3. Stalling is handled deterministically via [`AgentController.cs`](file:///E:/Projects/Projects/Multi-Agent/Unity/Assets/Scripts/AgentController.cs): if a rover is physically stuck ($v < 0.15\text{ m/s}$) for $> 1.5\text{ s}$, the targeted waypoint is marked impassable ($3\times 3$ footprint) and a fresh replan is enforced.
+  2. [`find_safe_frontier()`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/pathfinder.py#L122-L151) pre-filters frontier candidates against cell risk (threshold <= 0.02) before invoking A*, guaranteeing the planner never targets a contaminated cell unless the entire zone is impassable.
+  3. Stalling is handled deterministically via [`AgentController.cs`](file:///E:/Projects/Projects/Multi-Agent/Unity/Assets/Scripts/AgentController.cs): if a rover is physically stuck (velocity < 0.15 m/s for >= 1.5 s), the targeted waypoint is marked impassable (3x3 footprint) and a fresh replan is enforced.
 
 ### Reward Function Parameters (`backend/config/rewards.yml`)
 Matching Section V-C and Table II of the paper:
@@ -203,7 +202,7 @@ Matching Section V-C and Table II of the paper:
 | Event Trigger | Reward Value | Algorithmic Rationale |
 | :--- | :---: | :--- |
 | **New cell explored** (`r_explore`) | `+10.0` | Primary exploration driver; encourages rapid frontier discovery. |
-| **Agent death** (`r_death`) | `-40.0` | Severe casualty penalty. Tuned from $-50$ (overly timid) and $-30$ (reckless attrition). |
+| **Agent death** (`r_death`) | `-40.0` | Severe casualty penalty. Tuned from -50 (overly timid) and -30 (reckless attrition). |
 | **Redundant cross-zone overlap** (`r_overlap`) | `-1.5` | Penalizes stepping into peer zones, preserving Voronoi separation. |
 | **Forced stall-breaking reroute** (`r_unnecessary_retreat`) | `-2.0` | Discourages getting trapped in physical geometry. |
 | **Medium risk exposure** (`r_risk_exposure`) | `-2.0` | Penalizes lingering in active hazard blast radii. |
@@ -213,13 +212,13 @@ Matching Section V-C and Table II of the paper:
 
 ### Double DQN Architecture & Hyperparameters
 Implemented in [`backend/handler/rl_policy.py`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/rl_policy.py):
-- **Network**: Multi-Layer Perceptron (Input: 6 $\to$ Dense(64) $\to$ ReLU $\to$ Dense(64) $\to$ ReLU $\to$ Output: 4).
-- **Optimizer**: Adam ($\text{learning rate} = 3 \times 10^{-4}$).
-- **Loss**: Smooth L1 (Huber Loss) with gradient clipping norm ($10.0$).
-- **Discount Factor ($\gamma$)**: $0.99$.
-- **Replay Buffer**: $50,000$ transitions; sampled in batches of $512$.
-- **Target Network Update**: Every $5$ episodes (`ep % 5 == 0`).
-- **Exploration Schedule ($\epsilon$)**: Linear decay from $1.0 \to 0.05$ over the first $33\%$ of episodes (~$950$ episodes), then locked at $0.05$.
+- **Network**: Multi-Layer Perceptron (Input: 6 → Dense(64) → ReLU → Dense(64) → ReLU → Output: 4).
+- **Optimizer**: Adam (learning rate = 0.0003).
+- **Loss**: Smooth L1 (Huber Loss) with gradient clipping norm 10.0.
+- **Discount Factor**: 0.99.
+- **Replay Buffer**: 50,000 transitions; sampled in batches of 512.
+- **Target Network Update**: Every 5 episodes (`ep % 5 == 0`).
+- **Exploration Schedule (Epsilon)**: Linear decay from 1.0 to 0.05 over the first 33% of episodes (~950 episodes), then locked at 0.05.
 
 ---
 
@@ -227,37 +226,35 @@ Implemented in [`backend/handler/rl_policy.py`](file:///E:/Projects/Projects/Mul
 
 ### 1. Polygon-Based Voronoi Partitioning
 Implemented in [`backend/coordinator/voronoi_partition.py`](file:///E:/Projects/Projects/Multi-Agent/backend/coordinator/voronoi_partition.py). Rather than relying on simple Euclidean nearest-neighbor approximations, the system builds true Voronoi polygons across active agent seed positions using `scipy.spatial.Voronoi`:
-- Bounding dummy vertices $([-w, -h], [2w, -h], [2w, 2h], [-w, 2h])$ constrain infinite Voronoi ridges.
+- Bounding dummy vertices constrain infinite Voronoi ridges within the grid domain.
 - Polygons are evaluated using `matplotlib.path.Path.contains_point()` to assign unexplored cells discretely without boundary contention.
 
 ### 2. Failure Recovery & Dynamic Reassignment
 Implemented in [`backend/coordinator/reassignment.py`](file:///E:/Projects/Projects/Multi-Agent/backend/coordinator/reassignment.py). When an agent is eliminated or requests reassignment:
-1. The coordinator computes the geometric centroid $(\bar{x}, \bar{z})$ of the orphaned cells.
-2. The nearest active agent is identified:
-   $$i^* = \arg\min_{i \in \text{ActiveAgents}} \|\mathbf{p}_i - \mathbf{c}_{\text{orphan}}\|_2$$
+1. The coordinator computes the geometric centroid of the orphaned cells.
+2. The nearest active agent is identified by minimum Euclidean distance to the orphaned centroid.
 3. A complete global Voronoi re-partition is triggered across the surviving fleet, smoothly absorbing the orphaned territory without stalling the exploration mission.
 
 ### 3. Hazard-Weighted A* Pathfinding
-Implemented in [`backend/handler/pathfinder.py`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/pathfinder.py). When detouring around threats, the step cost $c(u, v)$ accounts for both travel distance and the continuous danger field:
-$$c(u, v) = 1.0 + \left( w_{\text{hazard}} \times \text{HazardCostMap}[z, x] \right), \quad \text{where } w_{\text{hazard}} = 25.0$$
+Implemented in [`backend/handler/pathfinder.py`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/pathfinder.py). When detouring around threats, the step cost dynamically accounts for both travel distance and the continuous danger field, applying a 25.0x hazard weighting to steer rovers safely around threat blast radii.
 
 ---
 
 ## Empirical Results & Convergence
 
-The complete training run was conducted over **3,000 headless episodes** in [`TrainingSandboxEnv`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/training_sandbox.py) ($15\times15$ grid, 12 obstacles, 3 hazards, 4 rovers). Performance metrics are verified against the saved log file [`logs/training_metrics.csv`](file:///E:/Projects/Projects/Multi-Agent/logs/training_metrics.csv).
+The complete training run was conducted over **3,000 headless episodes** in [`TrainingSandboxEnv`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/training_sandbox.py) (15x15 grid, 12 obstacles, 3 hazards, 4 rovers). Performance metrics are verified against the saved log file [`logs/training_metrics.csv`](file:///E:/Projects/Projects/Multi-Agent/logs/training_metrics.csv).
 
 ### Sustained Performance (Episodes 2600–2900)
 Verified against Table III of the research paper:
 
 | Evaluation Metric | Measured Mean Value | Convergence Characteristic |
 | :--- | :---: | :--- |
-| **Mean Local Coverage** | **$85.1\%$** | High intra-zone exploration completeness across all 4 rovers. |
-| **Mean Global Occupancy Coverage** | **$85.6\%$** | Collective fleet coverage of the entire obstacle-free environment. |
-| **Mean Survival Rate** | **$85.0\%$** | Sustained survivability under lethal hazards (discrete $0, 25, 50, 75, 100\%$ steps). |
-| **Mean Training Loss (Smooth L1)** | **$5.68$** | Loss function fully converged by episode 1800 with zero divergence. |
-| **Mean Q-Value** | **$20.2$** | Estimated expected return stabilized cleanly without overestimation bias. |
-| **Total Evaluated Episodes** | **$3,000$** | Checkpoints saved every 50 episodes to `backend/handler/checkpoints/`. |
+| **Mean Local Coverage** | **85.1%** | High intra-zone exploration completeness across all 4 rovers. |
+| **Mean Global Occupancy Coverage** | **85.6%** | Collective fleet coverage of the entire obstacle-free environment. |
+| **Mean Survival Rate** | **85.0%** | Sustained survivability under lethal hazards (discrete 0%, 25%, 50%, 75%, 100% steps). |
+| **Mean Training Loss (Smooth L1)** | **5.68** | Loss function fully converged by episode 1800 with zero divergence. |
+| **Mean Q-Value** | **20.2** | Estimated expected return stabilized cleanly without overestimation bias. |
+| **Total Evaluated Episodes** | **3,000** | Checkpoints saved every 50 episodes to `backend/handler/checkpoints/`. |
 
 ---
 
@@ -526,28 +523,10 @@ wasp:
 ### Status Against Section VII Future Work
 - [x] **3D Continuous Actuation Layer**: Implemented in Unity 6000 URP with rigidbody physics and soft-edge volumetric fog-of-war.
 - [x] **Decoupled Asynchronous Communication**: Independent WebSocket links for Coordinator, Handler, and Actuation.
-- [x] **True $N$-Agent Polygon Voronoi Partitioning**: Implemented via `scipy.spatial.Voronoi` with boundary dummy vertices.
+- [x] **True Multi-Agent Polygon Voronoi Partitioning**: Implemented via `scipy.spatial.Voronoi` with boundary dummy vertices.
 - [x] **Architectural Stall Elimination**: Removal of `Hold` action and integration of `find_safe_frontier`.
 - [ ] **Resilient Mesh Layer Active Takeover**: The heartbeat monitor (`heartbeat_monitor.py`) tracks missed acks (3.0s timeout), but automated peer-to-peer ad-hoc socket mesh migration remains future work.
 - [ ] **Dynamic & Mobile Hazards**: The persistence axis schema supports mobile threats, but evaluated profiles in `jungle_demo.yml` are stationary.
 
-### Operational Notes
-- **Grid Dimension Alignment**: The map resolution ($30\times30$, resolution $1.0\text{ m}$) is shared across [`TerrainManager.cs`](file:///E:/Projects/Projects/Multi-Agent/Unity/Assets/Scripts/TerrainManager.cs), [`FogOfWarManager.cs`](file:///E:/Projects/Projects/Multi-Agent/Unity/Assets/Scripts/FogOfWarManager.cs), [`occupancy_grid.py`](file:///E:/Projects/Projects/Multi-Agent/backend/coordinator/occupancy_grid.py), and [`local_risk_map.py`](file:///E:/Projects/Projects/Multi-Agent/backend/handler/local_risk_map.py). Adjusting map bounds requires updating these files in unison.
-- **Local Dev Security**: WebSockets are unauthenticated and intended for localhost testing (`127.0.0.1`).
 
----
 
-## Citation
-
-If you use this codebase or build upon the architecture in your research, please cite:
-
-```bibtex
-@inproceedings{gowda2026risk,
-  title={Risk-Aware Semi-Centralized Multi-Agent Exploration System in Unknown Environments},
-  author={Gowda H C, Vishnu and Hegde, S S Darshan and B M, Sarvotham and Dev C, Rahul},
-  booktitle={Department of Information Science and Engineering, Sai Vidya Institute of Technology},
-  organization={Visvesvaraya Technological University (VTU)},
-  address={Bengaluru, India},
-  year={2026}
-}
-```
